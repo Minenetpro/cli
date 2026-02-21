@@ -17,3 +17,16 @@ Ink-based terminal frontend for Minenet.
 ```bash
 npm run build
 ```
+
+## Binary Build
+
+```bash
+npm run build:bin
+```
+
+This produces `dist/minenet-cli` for the current platform.
+
+## CI/CD
+
+- `.github/workflows/build-binaries.yml` builds Linux/macOS/Windows binaries on pushes and PRs.
+- `.github/workflows/release.yml` publishes a GitHub release when pushing branches like `v1.2.3`.
