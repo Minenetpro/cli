@@ -45,11 +45,16 @@ jobs:
           OS="$(echo '${{ runner.os }}' | tr '[:upper:]' '[:lower:]')"
           ARCH="$(echo '${{ runner.arch }}' | tr '[:upper:]' '[:lower:]')"
           bun build --compile source/cli.tsx --outfile "dist/minenet-cli-${OS}-${ARCH}"
-          if find dist -maxdepth 1 -type f -name '*[A-Z]*' | grep -q .; then
-            echo "Uppercase letters detected in binary filename(s)." >&2
-            find dist -maxdepth 1 -type f -name '*[A-Z]*'
-            exit 1
-          fi
+          for file in dist/*; do
+            [ -f "$file" ] || continue
+            base="$(basename "$file")"
+            lower="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+            if [ "$base" != "$lower" ]; then
+              echo "Uppercase letters detected in binary filename(s)." >&2
+              echo "$file"
+              exit 1
+            fi
+          done
 
       - name: Build binary (Windows)
         if: runner.os == 'Windows'
