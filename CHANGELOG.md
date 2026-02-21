@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.0.4 - 2026-02-21
+
+### Fixed
+
+- Fixed compiled CLI startup crash on Bun (`Cannot find module './yoga.wasm'`) by adding a runtime fallback from WASM Yoga to ASM Yoga in `yoga-wasm-web`.
+- Ensured the dependency patch is applied automatically after install via `postinstall`.
+
+### Changed
+
+- Added `patch-package` as a dev dependency.
+- Bumped CLI package version to `1.0.4`.
+
+### Agent Notes
+
+- Keep `patches/yoga-wasm-web+0.3.3.patch` in sync with `yoga-wasm-web` version upgrades.
+- If `ink` or `yoga-wasm-web` versions change, verify compiled binaries still boot with `--help` on Linux/macOS/Windows.
+- Do not remove `postinstall: patch-package` unless the upstream dependency no longer requires this runtime fallback.
+
 ## v1.0.3 - 2026-02-21
 
 ### Added

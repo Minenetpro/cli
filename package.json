@@ -1,6 +1,6 @@
 {
 	"name": "cli",
-	"version": "0.0.0",
+	"version": "1.0.4",
 	"license": "MIT",
 	"bin": {
 		"minenet": "dist/cli.js"
@@ -13,7 +13,8 @@
 		"build": "tsc",
 		"build:bin": "bun build --compile source/cli.tsx --outfile dist/minenet-cli",
 		"dev": "tsc --watch",
-		"test": "prettier --check . && xo && ava"
+		"test": "prettier --check . && xo && ava",
+		"postinstall": "patch-package"
 	},
 	"files": [
 		"dist"
@@ -34,6 +35,7 @@
 		"eslint-plugin-react": "^7.32.2",
 		"eslint-plugin-react-hooks": "^4.6.0",
 		"ink-testing-library": "^3.0.0",
+		"patch-package": "^8.0.1",
 		"prettier": "^2.8.7",
 		"ts-node": "^10.9.1",
 		"typescript": "^5.0.3",
