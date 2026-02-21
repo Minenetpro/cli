@@ -31,7 +31,10 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: npm ci
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci || npm install --no-audit --no-fund
 
       - name: Build binary (Unix)
         if: runner.os != 'Windows'
@@ -42,6 +45,11 @@ jobs:
           OS="$(echo '${{ runner.os }}' | tr '[:upper:]' '[:lower:]')"
           ARCH="$(echo '${{ runner.arch }}' | tr '[:upper:]' '[:lower:]')"
           bun build --compile source/cli.tsx --outfile "dist/minenet-cli-${OS}-${ARCH}"
+          if find dist -maxdepth 1 -type f -name '*[A-Z]*' | grep -q .; then
+            echo "Uppercase letters detected in binary filename(s)." >&2
+            find dist -maxdepth 1 -type f -name '*[A-Z]*'
+            exit 1
+          fi
 
       - name: Build binary (Windows)
         if: runner.os == 'Windows'
@@ -51,6 +59,12 @@ jobs:
           $os = "${{ runner.os }}".ToLower()
           $arch = "${{ runner.arch }}".ToLower()
           bun build --compile source/cli.tsx --outfile "dist/minenet-cli-$os-$arch.exe"
+          $upper = Get-ChildItem dist -File | Where-Object { $_.Name -cmatch '[A-Z]' }
+          if ($upper) {
+            Write-Error "Uppercase letters detected in binary filename(s)."
+            $upper | ForEach-Object { $_.Name }
+            exit 1
+          }
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
