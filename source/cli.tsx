@@ -26,7 +26,7 @@ Options
   --force              Overwrite conflict protections for pull/push
   --detach             Queue deploy and exit without polling run status
   --no-open            Do not auto-open browser for login
-  --api                Base URL for minenet-pro (default: https://prod.minenetpro.app)
+  --api                Base URL for minenet-pro (default: https://www.minenet.pro)
   --json               Output machine-readable JSON
   --prune              Enable prune on deploy (default: true)
 

@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.0.5 - 2026-02-21
+
+### Changed
+
+- Switched default CLI API base URL to the main app domain:
+  - from `https://prod.minenetpro.app`
+  - to `https://www.minenet.pro`
+
+### Agent Notes
+
+- Keep CLI default API host aligned with the primary app domain used by `minenet-pro` API routes.
+- Use `--api` for temporary environment overrides; do not change code defaults for one-off staging/testing runs.
+
 ## v1.0.4 - 2026-02-21
 
 ### Fixed
