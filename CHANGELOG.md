@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.0.6 - 2026-02-21
+
+### Fixed
+
+- Updated deploy polling to support the new run lifecycle statuses from `minenet-pro`:
+  - `queued`, `planning`, `executing`, `finalizing`, `succeeded`, `failed`, `canceled`
+  - while keeping backward compatibility with legacy `running` / `completed`
+- Updated deploy summary output to prefer `summary.succeeded` with fallback to legacy `summary.success`.
+
+### Changed
+
+- Marked `--prune` as deprecated/ignored in CLI help for current deployments API compatibility.
+- Stopped sending `prune` in deploy requests to the local daemon.
+
+### Agent Notes
+
+- Keep CLI run polling compatible with current lifecycle in `/api/client/v1/deployments/runs/{runId}`.
+- Preserve backward compatibility for older daemon/API responses where practical (`running` / `completed`, `success`).
+- If run schema changes again, update:
+  - `source/commands.ts` deploy status union/terminal handling
+  - deploy summary fields displayed to users
+
 ## v1.0.5 - 2026-02-21
 
 ### Changed

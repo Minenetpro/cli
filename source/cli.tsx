@@ -28,7 +28,7 @@ Options
   --no-open            Do not auto-open browser for login
   --api                Base URL for minenet-pro (default: https://www.minenet.pro)
   --json               Output machine-readable JSON
-  --prune              Enable prune on deploy (default: true)
+  --prune              Deprecated flag (ignored by current deployments API)
 
 Examples
   $ minenet login

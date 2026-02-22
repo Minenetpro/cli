@@ -356,7 +356,6 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 			cwd: input.cwd,
 			workspacePath: input.flags.workspace,
 			selector: input.flags.config,
-			prune: input.flags.prune,
 		},
 	});
 
@@ -376,43 +375,66 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 	let allOk = true;
 
 	for (const run of queued.queued) {
-		let lastStatus = '';
+		let lastPhase = '';
 
 		while (true) {
 			const details = await daemonRequest<{
 				run: {
-					status: 'queued' | 'running' | 'completed' | 'failed';
+					status:
+						| 'queued'
+						| 'planning'
+						| 'executing'
+						| 'finalizing'
+						| 'succeeded'
+						| 'failed'
+						| 'canceled'
+						| 'running'
+						| 'completed';
+					stage?: 'planning' | 'executing' | 'finalizing' | null;
 					summary: {
-						success: number;
-						failed: number;
+						succeeded?: number;
+						success?: number;
+						failed?: number;
 					} | null;
 					error: string | null;
+					failure_class?: string | null;
 				};
 			}>({
 				path: `/v1/deploy/runs/${encodeURIComponent(run.runId)}`,
 				method: 'GET',
 			});
 
-			if (details.run.status !== lastStatus) {
-				lastStatus = details.run.status;
-				emit(input.onProgress, `Run ${run.runId}: ${details.run.status}`);
+			const phase = details.run.stage
+				? `${details.run.status} (${details.run.stage})`
+				: details.run.status;
+			if (phase !== lastPhase) {
+				lastPhase = phase;
+				emit(input.onProgress, `Run ${run.runId}: ${phase}`);
 			}
 
-			if (details.run.status === 'completed') {
+			if (
+				details.run.status === 'succeeded' ||
+				details.run.status === 'completed'
+			) {
 				const summary = details.run.summary;
 				emit(
 					input.onProgress,
-					`Run ${run.runId} completed (success=${
-						summary?.success ?? 0
+					`Run ${run.runId} ${details.run.status} (succeeded=${
+						summary?.succeeded ?? summary?.success ?? 0
 					}, failed=${summary?.failed ?? 0})`,
 				);
 				break;
 			}
 
-			if (details.run.status === 'failed') {
+			if (
+				details.run.status === 'failed' ||
+				details.run.status === 'canceled'
+			) {
 				emit(
 					input.onProgress,
-					`Run ${run.runId} failed: ${details.run.error ?? 'Unknown error'}`,
+					`Run ${run.runId} ${details.run.status}: ${
+						details.run.error ?? details.run.failure_class ?? 'Unknown error'
+					}`,
 				);
 				allOk = false;
 				break;
