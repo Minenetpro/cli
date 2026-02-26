@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.0.7 - 2026-02-26
+
+### Added
+
+- Added `--debug` flag to show raw configuration IDs and run IDs/UUIDs in push/deploy logs when troubleshooting.
+- Added deploy progress phase signals (`sync`, `queue`, `monitor`, `detached`, `done`, `failed`, `blocked`) and elapsed-time output in the terminal UI.
+
+### Changed
+
+- `deploy` now performs workspace sync/push first, then queues deployment runs.
+- Deploy output now prefers friendly names and directory labels by default, hiding raw IDs unless `--debug` is provided.
+- Push/deploy sync output now includes create/update/delete summaries plus actionable retry guidance.
+- Improved CLI run log styling and color mapping so successful run summaries are not shown as errors.
+
+### Fixed
+
+- Improved handling of daemon `409` sync responses to surface structured sync issues instead of vague errors when available.
+- Improved push/deploy failure rendering for validation failures by showing field-level issue details when returned by the daemon.
+
+### Agent Notes
+
+- Preserve default non-debug UX by avoiding raw IDs in user-facing run/config output.
+- Keep `--debug` as the single switch for low-level identifiers and raw payload diagnostics.
+- If deploy lifecycle/phase events change, update both:
+  - `source/commands.ts` phase emission and run status handling
+  - `source/app.tsx` phase labels and line color classification
+
 ## v1.0.6 - 2026-02-21
 
 ### Fixed

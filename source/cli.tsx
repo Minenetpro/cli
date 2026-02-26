@@ -17,16 +17,17 @@ Commands
   whoami               Show current team profile
   pull                 Pull deployment configurations into local workspace
   push                 Push local configuration YAML changes to remote
-  deploy               Queue deploy apply for configuration(s)
+  deploy               Push workspace, then queue deploy apply
   status               Show auth + workspace manifest state
 
 Options
   --workspace, -w      Workspace path (default: ./<team-slug>)
   --config, -c         Configuration id or directory name selector
-  --force              Overwrite conflict protections for pull/push
+  --force              Overwrite conflict protections for pull/push/deploy sync
   --detach             Queue deploy and exit without polling run status
   --no-open            Do not auto-open browser for login
   --api                Base URL for minenet-pro (default: https://www.minenet.pro)
+  --debug              Show raw IDs/UUIDs in logs
   --json               Output machine-readable JSON
   --prune              Deprecated flag (ignored by current deployments API)
 
@@ -63,6 +64,10 @@ Examples
 				type: 'boolean',
 				default: false,
 			},
+			debug: {
+				type: 'boolean',
+				default: false,
+			},
 			prune: {
 				type: 'boolean',
 				default: true,
@@ -87,6 +92,7 @@ const flags: CliFlags = {
 	detach: cli.flags.detach,
 	api: cli.flags.api,
 	json: cli.flags.json,
+	debug: cli.flags.debug,
 	prune: cli.flags.prune,
 	noOpen: !cli.flags.open,
 };

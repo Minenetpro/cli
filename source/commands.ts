@@ -24,8 +24,85 @@ type StatusResponse = {
 	} | null;
 };
 
+type WorkspacePushResponse = {
+	ok: boolean;
+	workspaceRoot: string;
+	updated: string[];
+	skipped: string[];
+	created?: string[];
+	deleted?: string[];
+	conflicts?: Array<{
+		configurationName: string;
+		directoryName: string;
+		reason?: string;
+	}>;
+	failed?: Array<{
+		configurationId?: string;
+		directoryName: string;
+		operation: 'create' | 'update' | 'delete';
+		reason: string;
+		code?: string;
+		validationIssues?: Array<{
+			path?: string;
+			message: string;
+		}>;
+	}>;
+};
+
+type QueuedRunWithMetadata = {
+	configurationId: string;
+	runId: string;
+	status: string;
+	configurationName: string;
+	directoryName: string | null;
+};
+
 function emit(onProgress: ExecuteInput['onProgress'], log: string) {
 	onProgress?.({log});
+}
+
+function emitPhase(onProgress: ExecuteInput['onProgress'], phase: string) {
+	onProgress?.({phase});
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null;
+}
+
+function toWorkspacePushResponse(payload: unknown): WorkspacePushResponse | null {
+	if (!isRecord(payload)) {
+		return null;
+	}
+
+	if (typeof payload['ok'] !== 'boolean') {
+		return null;
+	}
+
+	if (typeof payload['workspaceRoot'] !== 'string') {
+		return null;
+	}
+
+	if (!Array.isArray(payload['updated']) || !Array.isArray(payload['skipped'])) {
+		return null;
+	}
+
+	return payload as WorkspacePushResponse;
+}
+
+function formatDaemon409Message(input: ExecuteInput, payload: unknown): string {
+	if (input.flags.debug) {
+		return `Workspace sync was rejected (409). Raw payload: ${JSON.stringify(payload)}`;
+	}
+
+	return 'Workspace sync was rejected (409). Re-run with --debug for raw payload.';
+}
+
+function describeConflictReason(reason: string | undefined): string {
+	if (reason === 'local_and_remote_changed') {
+		return 'Both local and remote changed since your last pull.';
+	}
+
+	return reason ? `Conflict: ${reason}.` : 'Workspace conflict detected.';
 }
 
 function sleep(ms: number): Promise<void> {
@@ -63,6 +140,139 @@ async function requireAuth(onProgress: ExecuteInput['onProgress']) {
 	}
 
 	return status.profile;
+}
+
+async function requestWorkspacePush(
+	input: ExecuteInput,
+): Promise<WorkspacePushResponse> {
+	return daemonRequest<WorkspacePushResponse>({
+		path: '/v1/workspace/push',
+		method: 'POST',
+		body: {
+			cwd: input.cwd,
+			workspacePath: input.flags.workspace,
+			selector: input.flags.config,
+			force: input.flags.force,
+		},
+	});
+}
+
+async function requestWorkspacePushHandled(
+	input: ExecuteInput,
+): Promise<WorkspacePushResponse> {
+	try {
+		return await requestWorkspacePush(input);
+	} catch (error) {
+		const daemonError = error as Error & {status?: number; payload?: unknown};
+		if (daemonError.status === 409) {
+			const parsed = toWorkspacePushResponse(daemonError.payload);
+			if (parsed) {
+				return parsed;
+			}
+
+			throw new Error(formatDaemon409Message(input, daemonError.payload));
+		}
+
+		throw error;
+	}
+}
+
+function emitPushIssues(
+	onProgress: ExecuteInput['onProgress'],
+	result: WorkspacePushResponse,
+	debug: boolean,
+) {
+	for (const conflict of result.conflicts ?? []) {
+		emit(
+			onProgress,
+			`- ${conflict.configurationName} (${conflict.directoryName}): ${describeConflictReason(
+				conflict.reason,
+			)}${debug && conflict.reason ? ` [${conflict.reason}]` : ''}`,
+		);
+	}
+
+	for (const failure of result.failed ?? []) {
+		const displayReason =
+			failure.validationIssues && failure.validationIssues.length > 0
+				? 'Configuration validation failed'
+				: failure.reason;
+		const ref =
+			debug && failure.configurationId
+				? `${failure.directoryName} (${failure.configurationId})`
+				: failure.directoryName;
+		emit(
+			onProgress,
+			`- ${failure.operation} ${ref}: ${displayReason}${
+				debug && failure.code ? ` [${failure.code}]` : ''
+			}`,
+		);
+
+		for (const issue of failure.validationIssues ?? []) {
+			const pathPrefix = issue.path ? `${issue.path}: ` : '';
+			emit(onProgress, `  · ${pathPrefix}${issue.message}`);
+		}
+	}
+}
+
+function emitPushSummary(
+	onProgress: ExecuteInput['onProgress'],
+	result: WorkspacePushResponse,
+) {
+	const createdCount = result.created?.length ?? 0;
+	const deletedCount = result.deleted?.length ?? 0;
+	emit(
+		onProgress,
+		`Pushed ${result.updated.length} updated, ${createdCount} created, ${deletedCount} deleted (${result.skipped.length} skipped)`,
+	);
+}
+
+function emitSyncGuidance(
+	input: ExecuteInput,
+	result: WorkspacePushResponse,
+	command: 'push' | 'deploy',
+) {
+	if ((result.conflicts?.length ?? 0) === 0 && (result.failed?.length ?? 0) === 0) {
+		return;
+	}
+
+	const selectedConfig = input.flags.config?.trim();
+	const preferredSelector =
+		selectedConfig || result.conflicts?.[0]?.directoryName || '<config>';
+	const retrySuffix = selectedConfig ? ` --config ${selectedConfig}` : '';
+	const retryCommand =
+		command === 'deploy'
+			? `minenet deploy${retrySuffix}`
+			: `minenet push${retrySuffix}`;
+
+	emit(
+		input.onProgress,
+		`Resolve sync issues before retrying ${command}:`,
+	);
+	emit(
+		input.onProgress,
+		`1) Pull latest: minenet pull --config ${preferredSelector}`,
+	);
+	emit(input.onProgress, '2) Review and merge local config.yml changes');
+	emit(input.onProgress, `3) Retry: ${retryCommand}`);
+	emit(
+		input.onProgress,
+		'Use --force only if you intentionally want local changes to overwrite remote.',
+	);
+}
+
+function formatQueuedRunLabel(
+	run: QueuedRunWithMetadata,
+	debug: boolean,
+): string {
+	const hasFriendlyName = run.configurationName !== run.configurationId;
+	const baseName = hasFriendlyName
+		? run.configurationName
+		: run.directoryName || 'configuration';
+	if (!debug) {
+		return baseName;
+	}
+
+	return `${baseName} [${run.configurationId}]`;
 }
 
 async function runLogin(input: ExecuteInput): Promise<CommandResult> {
@@ -299,38 +509,16 @@ async function runPush(input: ExecuteInput): Promise<CommandResult> {
 		};
 	}
 
-	const result = await daemonRequest<{
-		ok: boolean;
-		workspaceRoot: string;
-		updated: string[];
-		skipped: string[];
-		conflicts?: Array<{configurationName: string; directoryName: string}>;
-	}>({
-		path: '/v1/workspace/push',
-		method: 'POST',
-		body: {
-			cwd: input.cwd,
-			workspacePath: input.flags.workspace,
-			selector: input.flags.config,
-			force: input.flags.force,
-		},
-	});
+	const result = await requestWorkspacePushHandled(input);
 
 	if (!result.ok) {
-		emit(input.onProgress, 'Push blocked by conflicts.');
-		for (const conflict of result.conflicts ?? []) {
-			emit(
-				input.onProgress,
-				`- ${conflict.configurationName} (${conflict.directoryName})`,
-			);
-		}
+		emit(input.onProgress, 'Push completed with issues.');
+		emitPushIssues(input.onProgress, result, input.flags.debug);
+		emitSyncGuidance(input, result, 'push');
 		return {ok: false, exitCode: 4, logs: [], payload: result};
 	}
 
-	emit(
-		input.onProgress,
-		`Pushed ${result.updated.length} configurations (${result.skipped.length} skipped)`,
-	);
+	emitPushSummary(input.onProgress, result);
 
 	return {ok: true, exitCode: 0, logs: [], payload: result};
 }
@@ -346,6 +534,40 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 		};
 	}
 
+	emitPhase(input.onProgress, 'sync');
+	emit(input.onProgress, 'Syncing workspace before deploy...');
+	const pushResult = await requestWorkspacePushHandled(input);
+	if (!pushResult.ok) {
+		emit(input.onProgress, 'Deploy blocked because workspace sync failed.');
+		emitPushIssues(input.onProgress, pushResult, input.flags.debug);
+		emitSyncGuidance(input, pushResult, 'deploy');
+		emitPhase(input.onProgress, 'blocked');
+		return {ok: false, exitCode: 4, logs: [], payload: pushResult};
+	}
+
+	emitPushSummary(input.onProgress, pushResult);
+	emitPhase(input.onProgress, 'queue');
+
+	const status = await daemonRequest<{
+		workspaceRoot: string;
+		hasManifest: boolean;
+		manifest: {
+			entries: Record<
+				string,
+				{directoryName: string; configurationName: string}
+			>;
+		} | null;
+	}>({
+		path: '/v1/workspace/status',
+		method: 'POST',
+		body: {
+			cwd: input.cwd,
+			workspacePath: input.flags.workspace,
+		},
+	});
+
+	const manifestEntries = status.manifest?.entries ?? {};
+
 	const queued = await daemonRequest<{
 		workspaceRoot: string;
 		queued: Array<{configurationId: string; runId: string; status: string}>;
@@ -359,23 +581,50 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 		},
 	});
 
-	for (const run of queued.queued) {
-		emit(input.onProgress, `Queued ${run.configurationId}: run ${run.runId}`);
+	const queuedWithNames: QueuedRunWithMetadata[] = queued.queued.map(run => {
+		const manifestEntry = manifestEntries[run.configurationId];
+		return {
+			...run,
+			configurationName:
+				manifestEntry?.configurationName ?? run.configurationId,
+			directoryName: manifestEntry?.directoryName ?? null,
+		};
+	});
+
+	for (const [index, run] of queuedWithNames.entries()) {
+		const nameLabel = formatQueuedRunLabel(run, input.flags.debug);
+		const directorySuffix =
+			run.directoryName && run.directoryName !== nameLabel
+				? ` · ${run.directoryName}`
+				: '';
+		const debugSuffix = input.flags.debug ? ` -> run ${run.runId}` : '';
+		emit(
+			input.onProgress,
+			`Queued #${index + 1} ${nameLabel}${directorySuffix}${debugSuffix}`,
+		);
 	}
 
 	if (input.flags.detach) {
+		emitPhase(input.onProgress, 'detached');
 		return {
 			ok: true,
 			exitCode: 0,
 			logs: [],
-			payload: queued,
+			payload: {
+				workspaceRoot: queued.workspaceRoot,
+				queued: queuedWithNames,
+			},
 		};
 	}
 
+	emitPhase(input.onProgress, 'monitor');
 	let allOk = true;
 
-	for (const run of queued.queued) {
+	for (const [index, run] of queuedWithNames.entries()) {
 		let lastPhase = '';
+		const nameLabel = formatQueuedRunLabel(run, input.flags.debug);
+		const runLabel = `#${index + 1} ${nameLabel}`;
+		const debugRunId = input.flags.debug ? ` run=${run.runId}` : '';
 
 		while (true) {
 			const details = await daemonRequest<{
@@ -409,7 +658,7 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 				: details.run.status;
 			if (phase !== lastPhase) {
 				lastPhase = phase;
-				emit(input.onProgress, `Run ${run.runId}: ${phase}`);
+				emit(input.onProgress, `Run ${runLabel}: ${phase}${debugRunId}`);
 			}
 
 			if (
@@ -419,9 +668,9 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 				const summary = details.run.summary;
 				emit(
 					input.onProgress,
-					`Run ${run.runId} ${details.run.status} (succeeded=${
+					`Run ${runLabel} ${details.run.status} (succeeded=${
 						summary?.succeeded ?? summary?.success ?? 0
-					}, failed=${summary?.failed ?? 0})`,
+					}, failed=${summary?.failed ?? 0})${debugRunId}`,
 				);
 				break;
 			}
@@ -432,9 +681,9 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 			) {
 				emit(
 					input.onProgress,
-					`Run ${run.runId} ${details.run.status}: ${
+					`Run ${runLabel} ${details.run.status}: ${
 						details.run.error ?? details.run.failure_class ?? 'Unknown error'
-					}`,
+					}${debugRunId}`,
 				);
 				allOk = false;
 				break;
@@ -444,11 +693,15 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 		}
 	}
 
+	emitPhase(input.onProgress, allOk ? 'done' : 'failed');
 	return {
 		ok: allOk,
 		exitCode: allOk ? 0 : 2,
 		logs: [],
-		payload: queued,
+		payload: {
+			workspaceRoot: queued.workspaceRoot,
+			queued: queuedWithNames,
+		},
 	};
 }
 

@@ -1,5 +1,6 @@
 export type CliFlags = {
 	json: boolean;
+	debug: boolean;
 	force: boolean;
 	workspace?: string;
 	config?: string;
