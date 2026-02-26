@@ -57,6 +57,7 @@ Examples
 			},
 			api: {
 				type: 'string',
+				default: 'https://www.minenet.pro',
 			},
 			json: {
 				type: 'boolean',
