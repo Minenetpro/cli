@@ -32,6 +32,14 @@ function colorForLog(line: string): string {
 		return 'green';
 	}
 
+	if (normalized.startsWith('+') && !normalized.startsWith('+ ')) {
+		return 'green';
+	}
+
+	if (normalized.startsWith('-') && !normalized.startsWith('- ')) {
+		return 'red';
+	}
+
 	if (
 		normalized.startsWith('error:') ||
 		normalized.includes('blocked') ||
@@ -42,6 +50,10 @@ function colorForLog(line: string): string {
 	}
 
 	if (normalized.startsWith('queued ') || normalized.includes('run ')) {
+		return 'cyan';
+	}
+
+	if (normalized.includes(' diff ') || normalized.includes('version')) {
 		return 'cyan';
 	}
 

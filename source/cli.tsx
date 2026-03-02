@@ -16,17 +16,23 @@ Commands
   logout               Clear local auth state
   whoami               Show current team profile
   pull                 Pull deployment configurations into local workspace
-  push                 Push local configuration YAML changes to remote
-  deploy               Push workspace, then queue deploy apply
+  push                 Sync local configs and create pushed versions
+  versions             Show pushed configuration version history
+  diff                 Show diff between pushed versions
+  deploy               Queue deploy apply from pushed versions
   status               Show auth + workspace manifest state
 
 Options
   --workspace, -w      Workspace path (default: ./<team-slug>)
   --config, -c         Configuration id or directory name selector
+  --limit              Limit versions returned (default: 50)
+  --from               Source version ref for diff (e.g. v3 or version id)
+  --to                 Target version ref for diff (default: latest)
+  --message, -m        Optional push message (push command only, max: 1000 chars)
   --force              Overwrite conflict protections for pull/push/deploy sync
   --detach             Queue deploy and exit without polling run status
   --no-open            Do not auto-open browser for login
-  --api                Base URL for minenet-pro (default: https://www.minenet.pro)
+  --api                Override API base URL for this command/login target
   --debug              Show raw IDs/UUIDs in logs
   --json               Output machine-readable JSON
   --prune              Deprecated flag (ignored by current deployments API)
@@ -35,6 +41,9 @@ Examples
   $ minenet login
   $ minenet pull --workspace ./my-team
   $ minenet push --config lobby-server
+  $ minenet push --config lobby-server --message "Raise server memory and update DB size"
+  $ minenet versions --config lobby-server --limit 20
+  $ minenet diff --config lobby-server --from v3 --to v4
   $ minenet deploy --config lobby-server --detach
 `,
 	{
@@ -48,6 +57,19 @@ Examples
 				type: 'string',
 				shortFlag: 'c',
 			},
+			limit: {
+				type: 'number',
+			},
+			from: {
+				type: 'string',
+			},
+			to: {
+				type: 'string',
+			},
+			message: {
+				type: 'string',
+				shortFlag: 'm',
+			},
 			force: {
 				type: 'boolean',
 				default: false,
@@ -58,7 +80,6 @@ Examples
 			},
 			api: {
 				type: 'string',
-				default: 'https://www.minenet.pro',
 			},
 			json: {
 				type: 'boolean',
@@ -88,6 +109,10 @@ if (!command) {
 const flags: CliFlags = {
 	workspace: cli.flags.workspace,
 	config: cli.flags.config,
+	limit: cli.flags.limit,
+	from: cli.flags.from,
+	to: cli.flags.to,
+	message: cli.flags.message,
 	force: cli.flags.force,
 	detach: cli.flags.detach,
 	api: cli.flags.api,

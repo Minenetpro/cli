@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.0.8 - 2026-03-02
+
+### Added
+
+- Added `versions` command to show pushed configuration version history.
+- Added `diff` command to show unified diffs between pushed configuration versions.
+- Added `push --message/-m` to attach an optional push message (max 1000 chars).
+- Added `--limit`, `--from`, and `--to` flags for versions/diff workflows.
+
+### Changed
+
+- `push` now creates/reuses pushed versions and reports per-configuration version outcomes.
+- `deploy` now queues apply from already pushed versions instead of implicitly syncing first.
+- Added per-command API override support through daemon request header forwarding (`--api`).
+- Expanded daemon/API error message extraction for better surfaced failures.
+
+### Fixed
+
+- Fixed diff log rendering to split unified diff output by real newlines.
+- Improved workspace pull/push conflict output with clearer reasons and force guidance.
+
+### Agent Notes
+
+- Keep deploy semantics aligned with pushed-version model in `minenet-pro` apply APIs.
+- Keep `versions`/`diff` command output and flag docs in sync between `source/cli.tsx` and `readme.md`.
+
 ## v1.0.7 - 2026-02-26
 
 ### Added

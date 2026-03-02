@@ -9,6 +9,8 @@ Ink-based terminal frontend for Minenet.
 - `minenet whoami`
 - `minenet pull`
 - `minenet push`
+- `minenet versions`
+- `minenet diff`
 - `minenet deploy`
 - `minenet status`
 

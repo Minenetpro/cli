@@ -31,7 +31,16 @@ type WorkspacePushResponse = {
 	skipped: string[];
 	created?: string[];
 	deleted?: string[];
+	pushed?: Array<{
+		configurationId: string;
+		directoryName: string;
+		versionId: string;
+		versionNumber: number;
+		created: boolean;
+		pushMessage?: string | null;
+	}>;
 	conflicts?: Array<{
+		configurationId?: string;
 		configurationName: string;
 		directoryName: string;
 		reason?: string;
@@ -39,7 +48,7 @@ type WorkspacePushResponse = {
 	failed?: Array<{
 		configurationId?: string;
 		directoryName: string;
-		operation: 'create' | 'update' | 'delete';
+		operation: 'create' | 'update' | 'delete' | 'push';
 		reason: string;
 		code?: string;
 		validationIssues?: Array<{
@@ -47,6 +56,64 @@ type WorkspacePushResponse = {
 			message: string;
 		}>;
 	}>;
+};
+
+type WorkspacePullResponse = {
+	ok: boolean;
+	workspaceRoot: string;
+	pulled?: number;
+	count?: number;
+	skipped?: number;
+	conflicts?: Array<{
+		configurationId?: string;
+		configurationName: string;
+		directoryName: string;
+		reason?: string;
+	}>;
+};
+
+type WorkspaceVersionsResponse = {
+	workspaceRoot: string;
+	versions: Array<{
+		configurationId: string;
+		configurationName: string;
+		directoryName: string;
+		count: number;
+		versions: Array<{
+			id: string;
+			version_number: number;
+			spec_hash: string;
+			resource_count: number;
+			pushed_by: string;
+			pushed_at: number;
+			push_message?: string | null;
+		}>;
+	}>;
+};
+
+type WorkspaceDiffResponse = {
+	workspaceRoot: string;
+	configurationId: string;
+	configurationName: string;
+	directoryName: string;
+	ok: boolean;
+	from: {
+		id: string;
+		version_number: number;
+	} | null;
+	to: {
+		id: string;
+		version_number: number;
+	};
+	diff: {
+		unified: string;
+		truncated: boolean;
+		stats: {
+			added: number;
+			removed: number;
+		};
+	};
+	has_changes: boolean;
 };
 
 type QueuedRunWithMetadata = {
@@ -65,11 +132,82 @@ function emitPhase(onProgress: ExecuteInput['onProgress'], phase: string) {
 	onProgress?.({phase});
 }
 
+function daemonRequestForInput<T>(
+	input: ExecuteInput,
+	request: {
+		path: string;
+		method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+		body?: unknown;
+	},
+): Promise<T> {
+	return daemonRequest<T>({
+		...request,
+		apiBaseUrl: input.flags.api,
+	});
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null;
 }
 
-function toWorkspacePushResponse(payload: unknown): WorkspacePushResponse | null {
+function toStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+
+	return value.filter((item): item is string => typeof item === 'string');
+}
+
+function toPushedVersionEntries(
+	value: unknown,
+): NonNullable<WorkspacePushResponse['pushed']> {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+
+	return value
+		.map(item => {
+			if (!isRecord(item)) {
+				return null;
+			}
+			if (
+				typeof item['configurationId'] !== 'string' ||
+				typeof item['directoryName'] !== 'string' ||
+				typeof item['versionId'] !== 'string' ||
+				typeof item['versionNumber'] !== 'number' ||
+				typeof item['created'] !== 'boolean'
+			) {
+				return null;
+			}
+			const pushMessage =
+				typeof item['pushMessage'] === 'string' ? item['pushMessage'] : null;
+
+			return {
+				configurationId: item['configurationId'],
+				directoryName: item['directoryName'],
+				versionId: item['versionId'],
+				versionNumber: item['versionNumber'],
+				created: item['created'],
+				pushMessage,
+			};
+		})
+		.filter(
+			(
+				entry,
+			): entry is {
+				configurationId: string;
+				directoryName: string;
+				versionId: string;
+				versionNumber: number;
+				created: boolean;
+				pushMessage: string | null;
+			} => entry !== null,
+		);
+}
+
+function toWorkspacePushResponse(
+	payload: unknown,
+): WorkspacePushResponse | null {
 	if (!isRecord(payload)) {
 		return null;
 	}
@@ -82,19 +220,47 @@ function toWorkspacePushResponse(payload: unknown): WorkspacePushResponse | null
 		return null;
 	}
 
-	if (!Array.isArray(payload['updated']) || !Array.isArray(payload['skipped'])) {
+	return {
+		...(payload as WorkspacePushResponse),
+		updated: toStringArray(payload['updated']),
+		skipped: toStringArray(payload['skipped']),
+		created: toStringArray(payload['created']),
+		deleted: toStringArray(payload['deleted']),
+		pushed: toPushedVersionEntries(payload['pushed']),
+	};
+}
+
+function toWorkspacePullResponse(
+	payload: unknown,
+): WorkspacePullResponse | null {
+	if (!isRecord(payload)) {
 		return null;
 	}
 
-	return payload as WorkspacePushResponse;
-}
-
-function formatDaemon409Message(input: ExecuteInput, payload: unknown): string {
-	if (input.flags.debug) {
-		return `Workspace sync was rejected (409). Raw payload: ${JSON.stringify(payload)}`;
+	if (typeof payload['ok'] !== 'boolean') {
+		return null;
 	}
 
-	return 'Workspace sync was rejected (409). Re-run with --debug for raw payload.';
+	if (typeof payload['workspaceRoot'] !== 'string') {
+		return null;
+	}
+
+	return payload as WorkspacePullResponse;
+}
+
+function formatWorkspace409Message(
+	input: ExecuteInput,
+	command: 'pull' | 'push',
+	payload: unknown,
+): string {
+	const action = command === 'pull' ? 'Workspace pull' : 'Workspace sync';
+	if (input.flags.debug) {
+		return `${action} was rejected (409). Raw payload: ${JSON.stringify(
+			payload,
+		)}`;
+	}
+
+	return `${action} was rejected (409). Re-run with --debug for raw payload.`;
 }
 
 function describeConflictReason(reason: string | undefined): string {
@@ -128,14 +294,14 @@ function openBrowser(url: string): Promise<boolean> {
 	});
 }
 
-async function requireAuth(onProgress: ExecuteInput['onProgress']) {
-	const status = await daemonRequest<StatusResponse>({
+async function requireAuth(input: ExecuteInput) {
+	const status = await daemonRequestForInput<StatusResponse>(input, {
 		path: '/v1/auth/status',
 		method: 'GET',
 	});
 
 	if (!status.authenticated || !status.profile) {
-		emit(onProgress, 'Not logged in. Run `minenet login` first.');
+		emit(input.onProgress, 'Not logged in. Run `minenet login` first.');
 		return null;
 	}
 
@@ -145,7 +311,12 @@ async function requireAuth(onProgress: ExecuteInput['onProgress']) {
 async function requestWorkspacePush(
 	input: ExecuteInput,
 ): Promise<WorkspacePushResponse> {
-	return daemonRequest<WorkspacePushResponse>({
+	const message =
+		typeof input.flags.message === 'string' && input.flags.message.trim()
+			? input.flags.message.trim()
+			: undefined;
+
+	return daemonRequestForInput<WorkspacePushResponse>(input, {
 		path: '/v1/workspace/push',
 		method: 'POST',
 		body: {
@@ -153,6 +324,7 @@ async function requestWorkspacePush(
 			workspacePath: input.flags.workspace,
 			selector: input.flags.config,
 			force: input.flags.force,
+			message,
 		},
 	});
 }
@@ -170,11 +342,80 @@ async function requestWorkspacePushHandled(
 				return parsed;
 			}
 
-			throw new Error(formatDaemon409Message(input, daemonError.payload));
+			throw new Error(
+				formatWorkspace409Message(input, 'push', daemonError.payload),
+			);
 		}
 
 		throw error;
 	}
+}
+
+async function requestWorkspacePull(
+	input: ExecuteInput,
+): Promise<WorkspacePullResponse> {
+	return daemonRequestForInput<WorkspacePullResponse>(input, {
+		path: '/v1/workspace/pull',
+		method: 'POST',
+		body: {
+			cwd: input.cwd,
+			workspacePath: input.flags.workspace,
+			force: input.flags.force,
+		},
+	});
+}
+
+async function requestWorkspacePullHandled(
+	input: ExecuteInput,
+): Promise<WorkspacePullResponse> {
+	try {
+		return await requestWorkspacePull(input);
+	} catch (error) {
+		const daemonError = error as Error & {status?: number; payload?: unknown};
+		if (daemonError.status === 409) {
+			const parsed = toWorkspacePullResponse(daemonError.payload);
+			if (parsed) {
+				return parsed;
+			}
+
+			throw new Error(
+				formatWorkspace409Message(input, 'pull', daemonError.payload),
+			);
+		}
+
+		throw error;
+	}
+}
+
+async function requestWorkspaceVersions(
+	input: ExecuteInput,
+): Promise<WorkspaceVersionsResponse> {
+	return daemonRequestForInput<WorkspaceVersionsResponse>(input, {
+		path: '/v1/workspace/versions',
+		method: 'POST',
+		body: {
+			cwd: input.cwd,
+			workspacePath: input.flags.workspace,
+			selector: input.flags.config,
+			limit: input.flags.limit,
+		},
+	});
+}
+
+async function requestWorkspaceDiff(
+	input: ExecuteInput,
+): Promise<WorkspaceDiffResponse> {
+	return daemonRequestForInput<WorkspaceDiffResponse>(input, {
+		path: '/v1/workspace/diff',
+		method: 'POST',
+		body: {
+			cwd: input.cwd,
+			workspacePath: input.flags.workspace,
+			selector: input.flags.config,
+			from: input.flags.from,
+			to: input.flags.to,
+		},
+	});
 }
 
 function emitPushIssues(
@@ -185,9 +426,11 @@ function emitPushIssues(
 	for (const conflict of result.conflicts ?? []) {
 		emit(
 			onProgress,
-			`- ${conflict.configurationName} (${conflict.directoryName}): ${describeConflictReason(
-				conflict.reason,
-			)}${debug && conflict.reason ? ` [${conflict.reason}]` : ''}`,
+			`- ${conflict.configurationName} (${
+				conflict.directoryName
+			}): ${describeConflictReason(conflict.reason)}${
+				debug && conflict.reason ? ` [${conflict.reason}]` : ''
+			}`,
 		);
 	}
 
@@ -220,10 +463,38 @@ function emitPushSummary(
 ) {
 	const createdCount = result.created?.length ?? 0;
 	const deletedCount = result.deleted?.length ?? 0;
+	const pushedCount = result.pushed?.length ?? 0;
+	const createdVersions =
+		result.pushed?.filter(entry => entry.created).length ?? 0;
 	emit(
 		onProgress,
-		`Pushed ${result.updated.length} updated, ${createdCount} created, ${deletedCount} deleted (${result.skipped.length} skipped)`,
+		`Pushed ${result.updated.length} updated, ${createdCount} created, ${deletedCount} deleted (${result.skipped.length} skipped, ${pushedCount} version actions, ${createdVersions} new versions)`,
 	);
+}
+
+function emitPushVersionSummary(
+	onProgress: ExecuteInput['onProgress'],
+	result: WorkspacePushResponse,
+	debug: boolean,
+) {
+	for (const entry of result.pushed ?? []) {
+		const versionRef = `v${entry.versionNumber}`;
+		const idSuffix = debug ? ` (${entry.versionId})` : '';
+		const modeLabel = entry.created ? 'created' : 'reused';
+		emit(
+			onProgress,
+			`- push ${entry.directoryName}: ${modeLabel} ${versionRef}${idSuffix}`,
+		);
+		const pushMessage =
+			typeof entry.pushMessage === 'string' ? entry.pushMessage.trim() : '';
+		if (pushMessage) {
+			const lines = pushMessage.split('\n');
+			for (const [index, line] of lines.entries()) {
+				const prefix = index === 0 ? '  message: ' : '           ';
+				emit(onProgress, `${prefix}${line}`);
+			}
+		}
+	}
 }
 
 function emitSyncGuidance(
@@ -231,7 +502,10 @@ function emitSyncGuidance(
 	result: WorkspacePushResponse,
 	command: 'push' | 'deploy',
 ) {
-	if ((result.conflicts?.length ?? 0) === 0 && (result.failed?.length ?? 0) === 0) {
+	if (
+		(result.conflicts?.length ?? 0) === 0 &&
+		(result.failed?.length ?? 0) === 0
+	) {
 		return;
 	}
 
@@ -244,10 +518,7 @@ function emitSyncGuidance(
 			? `minenet deploy${retrySuffix}`
 			: `minenet push${retrySuffix}`;
 
-	emit(
-		input.onProgress,
-		`Resolve sync issues before retrying ${command}:`,
-	);
+	emit(input.onProgress, `Resolve sync issues before retrying ${command}:`);
 	emit(
 		input.onProgress,
 		`1) Pull latest: minenet pull --config ${preferredSelector}`,
@@ -276,7 +547,7 @@ function formatQueuedRunLabel(
 }
 
 async function runLogin(input: ExecuteInput): Promise<CommandResult> {
-	const start = await daemonRequest<{
+	const start = await daemonRequestForInput<{
 		ok: boolean;
 		api_base_url: string;
 		device_code: string;
@@ -285,7 +556,7 @@ async function runLogin(input: ExecuteInput): Promise<CommandResult> {
 		verification_uri_complete: string;
 		expires_in: number;
 		interval: number;
-	}>({
+	}>(input, {
 		path: '/v1/auth/login/start',
 		method: 'POST',
 		body: {
@@ -320,7 +591,7 @@ async function runLogin(input: ExecuteInput): Promise<CommandResult> {
 	while (Date.now() - startedAt < start.expires_in * 1000) {
 		await sleep(intervalSec * 1000);
 
-		const poll = await daemonRequest<
+		const poll = await daemonRequestForInput<
 			| {ok: true; authenticated: true; profile: StatusResponse['profile']}
 			| {
 					ok: false;
@@ -329,7 +600,7 @@ async function runLogin(input: ExecuteInput): Promise<CommandResult> {
 					error_description?: string;
 					interval?: number;
 			  }
-		>({
+		>(input, {
 			path: '/v1/auth/login/poll',
 			method: 'POST',
 			body: {
@@ -403,7 +674,7 @@ async function runLogin(input: ExecuteInput): Promise<CommandResult> {
 }
 
 async function runWhoami(input: ExecuteInput): Promise<CommandResult> {
-	const status = await daemonRequest<StatusResponse>({
+	const status = await daemonRequestForInput<StatusResponse>(input, {
 		path: '/v1/auth/status',
 		method: 'GET',
 	});
@@ -422,6 +693,7 @@ async function runWhoami(input: ExecuteInput): Promise<CommandResult> {
 		input.onProgress,
 		`Current team: ${status.profile.team_name} (${status.profile.team_slug})`,
 	);
+	emit(input.onProgress, `API base: ${status.profile.api_base_url}`);
 
 	return {
 		ok: true,
@@ -432,7 +704,7 @@ async function runWhoami(input: ExecuteInput): Promise<CommandResult> {
 }
 
 async function runLogout(input: ExecuteInput): Promise<CommandResult> {
-	const response = await daemonRequest<{ok: boolean}>({
+	const response = await daemonRequestForInput<{ok: boolean}>(input, {
 		path: '/v1/auth/logout',
 		method: 'POST',
 		body: {},
@@ -451,7 +723,7 @@ async function runLogout(input: ExecuteInput): Promise<CommandResult> {
 }
 
 async function runPull(input: ExecuteInput): Promise<CommandResult> {
-	const profile = await requireAuth(input.onProgress);
+	const profile = await requireAuth(input);
 	if (!profile) {
 		return {
 			ok: false,
@@ -461,30 +733,28 @@ async function runPull(input: ExecuteInput): Promise<CommandResult> {
 		};
 	}
 
-	const result = await daemonRequest<{
-		ok: boolean;
-		workspaceRoot: string;
-		pulled?: number;
-		count?: number;
-		conflicts?: Array<{configurationName: string; directoryName: string}>;
-	}>({
-		path: '/v1/workspace/pull',
-		method: 'POST',
-		body: {
-			cwd: input.cwd,
-			workspacePath: input.flags.workspace,
-			force: input.flags.force,
-		},
-	});
+	const result = await requestWorkspacePullHandled(input);
 
 	if (!result.ok) {
 		emit(input.onProgress, 'Pull blocked by conflicts.');
 		for (const conflict of result.conflicts ?? []) {
+			const debugSuffix =
+				input.flags.debug && conflict.configurationId
+					? ` [${conflict.configurationId}]`
+					: '';
 			emit(
 				input.onProgress,
-				`- ${conflict.configurationName} (${conflict.directoryName})`,
+				`- ${conflict.configurationName} (${
+					conflict.directoryName
+				}): ${describeConflictReason(conflict.reason)}${debugSuffix}${
+					input.flags.debug && conflict.reason ? ` [${conflict.reason}]` : ''
+				}`,
 			);
 		}
+		emit(
+			input.onProgress,
+			'Use --force only if you intentionally want remote configs to overwrite local changes.',
+		);
 		return {ok: false, exitCode: 4, logs: [], payload: result};
 	}
 
@@ -499,7 +769,7 @@ async function runPull(input: ExecuteInput): Promise<CommandResult> {
 }
 
 async function runPush(input: ExecuteInput): Promise<CommandResult> {
-	const profile = await requireAuth(input.onProgress);
+	const profile = await requireAuth(input);
 	if (!profile) {
 		return {
 			ok: false,
@@ -519,12 +789,13 @@ async function runPush(input: ExecuteInput): Promise<CommandResult> {
 	}
 
 	emitPushSummary(input.onProgress, result);
+	emitPushVersionSummary(input.onProgress, result, input.flags.debug);
 
 	return {ok: true, exitCode: 0, logs: [], payload: result};
 }
 
 async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
-	const profile = await requireAuth(input.onProgress);
+	const profile = await requireAuth(input);
 	if (!profile) {
 		return {
 			ok: false,
@@ -534,21 +805,13 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 		};
 	}
 
-	emitPhase(input.onProgress, 'sync');
-	emit(input.onProgress, 'Syncing workspace before deploy...');
-	const pushResult = await requestWorkspacePushHandled(input);
-	if (!pushResult.ok) {
-		emit(input.onProgress, 'Deploy blocked because workspace sync failed.');
-		emitPushIssues(input.onProgress, pushResult, input.flags.debug);
-		emitSyncGuidance(input, pushResult, 'deploy');
-		emitPhase(input.onProgress, 'blocked');
-		return {ok: false, exitCode: 4, logs: [], payload: pushResult};
-	}
-
-	emitPushSummary(input.onProgress, pushResult);
+	emit(
+		input.onProgress,
+		'Deploying from latest pushed versions. Use `minenet push` first to publish local changes.',
+	);
 	emitPhase(input.onProgress, 'queue');
 
-	const status = await daemonRequest<{
+	const status = await daemonRequestForInput<{
 		workspaceRoot: string;
 		hasManifest: boolean;
 		manifest: {
@@ -557,7 +820,7 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 				{directoryName: string; configurationName: string}
 			>;
 		} | null;
-	}>({
+	}>(input, {
 		path: '/v1/workspace/status',
 		method: 'POST',
 		body: {
@@ -568,18 +831,46 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 
 	const manifestEntries = status.manifest?.entries ?? {};
 
-	const queued = await daemonRequest<{
+	let queued: {
 		workspaceRoot: string;
 		queued: Array<{configurationId: string; runId: string; status: string}>;
-	}>({
-		path: '/v1/workspace/deploy',
-		method: 'POST',
-		body: {
-			cwd: input.cwd,
-			workspacePath: input.flags.workspace,
-			selector: input.flags.config,
-		},
-	});
+	};
+	try {
+		queued = await daemonRequestForInput<{
+			workspaceRoot: string;
+			queued: Array<{configurationId: string; runId: string; status: string}>;
+		}>(input, {
+			path: '/v1/workspace/deploy',
+			method: 'POST',
+			body: {
+				cwd: input.cwd,
+				workspacePath: input.flags.workspace,
+				selector: input.flags.config,
+			},
+		});
+	} catch (error) {
+		const daemonError = error as Error & {
+			status?: number;
+			payload?: unknown;
+		};
+		const payload = daemonError.payload as
+			| {code?: string; error?: string}
+			| undefined;
+		if (payload?.code === 'NO_PUSHED_VERSION') {
+			const selector =
+				typeof input.flags.config === 'string' && input.flags.config.trim()
+					? ` --config ${input.flags.config.trim()}`
+					: '';
+			emit(
+				input.onProgress,
+				`Deploy blocked: ${payload.error ?? daemonError.message}`,
+			);
+			emit(input.onProgress, `Push a version first: minenet push${selector}`);
+			emitPhase(input.onProgress, 'blocked');
+			return {ok: false, exitCode: 4, logs: [], payload: daemonError.payload};
+		}
+		throw error;
+	}
 
 	const queuedWithNames: QueuedRunWithMetadata[] = queued.queued.map(run => {
 		const manifestEntry = manifestEntries[run.configurationId];
@@ -627,7 +918,7 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 		const debugRunId = input.flags.debug ? ` run=${run.runId}` : '';
 
 		while (true) {
-			const details = await daemonRequest<{
+			const details = await daemonRequestForInput<{
 				run: {
 					status:
 						| 'queued'
@@ -648,7 +939,7 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 					error: string | null;
 					failure_class?: string | null;
 				};
-			}>({
+			}>(input, {
 				path: `/v1/deploy/runs/${encodeURIComponent(run.runId)}`,
 				method: 'GET',
 			});
@@ -706,7 +997,7 @@ async function runDeploy(input: ExecuteInput): Promise<CommandResult> {
 }
 
 async function runStatus(input: ExecuteInput): Promise<CommandResult> {
-	const profile = await requireAuth(input.onProgress);
+	const profile = await requireAuth(input);
 	if (!profile) {
 		return {
 			ok: false,
@@ -716,7 +1007,7 @@ async function runStatus(input: ExecuteInput): Promise<CommandResult> {
 		};
 	}
 
-	const status = await daemonRequest<{
+	const status = await daemonRequestForInput<{
 		workspaceRoot: string;
 		hasManifest: boolean;
 		manifest: {
@@ -725,7 +1016,7 @@ async function runStatus(input: ExecuteInput): Promise<CommandResult> {
 				{directoryName: string; configurationName: string}
 			>;
 		} | null;
-	}>({
+	}>(input, {
 		path: '/v1/workspace/status',
 		method: 'POST',
 		body: {
@@ -734,6 +1025,7 @@ async function runStatus(input: ExecuteInput): Promise<CommandResult> {
 		},
 	});
 
+	emit(input.onProgress, `API base: ${profile.api_base_url}`);
 	emit(input.onProgress, `Workspace: ${status.workspaceRoot}`);
 	emit(
 		input.onProgress,
@@ -757,6 +1049,114 @@ async function runStatus(input: ExecuteInput): Promise<CommandResult> {
 		logs: [],
 		payload: status,
 	};
+}
+
+function formatPushedAt(timestamp: number): string {
+	try {
+		return new Date(timestamp).toLocaleString();
+	} catch {
+		return String(timestamp);
+	}
+}
+
+async function runVersions(input: ExecuteInput): Promise<CommandResult> {
+	const profile = await requireAuth(input);
+	if (!profile) {
+		return {
+			ok: false,
+			exitCode: 3,
+			logs: [],
+			payload: {error: 'Not logged in'},
+		};
+	}
+
+	const result = await requestWorkspaceVersions(input);
+	if (result.versions.length === 0) {
+		emit(input.onProgress, 'No matching configurations found in workspace.');
+		return {ok: true, exitCode: 0, logs: [], payload: result};
+	}
+
+	emit(input.onProgress, `Workspace: ${result.workspaceRoot}`);
+	for (const group of result.versions) {
+		emit(
+			input.onProgress,
+			`${group.configurationName} (${group.directoryName}) - ${group.count} versions`,
+		);
+		for (const version of group.versions) {
+			const idSuffix = input.flags.debug ? ` [${version.id}]` : '';
+			emit(
+				input.onProgress,
+				`- v${version.version_number}${idSuffix} · ${formatPushedAt(
+					version.pushed_at,
+				)} · resources=${version.resource_count}`,
+			);
+			const pushMessage =
+				typeof version.push_message === 'string'
+					? version.push_message.trim()
+					: '';
+			if (pushMessage) {
+				for (const [index, line] of pushMessage.split('\n').entries()) {
+					const prefix = index === 0 ? '  message: ' : '           ';
+					emit(input.onProgress, `${prefix}${line}`);
+				}
+			}
+		}
+	}
+
+	return {ok: true, exitCode: 0, logs: [], payload: result};
+}
+
+async function runDiff(input: ExecuteInput): Promise<CommandResult> {
+	const profile = await requireAuth(input);
+	if (!profile) {
+		return {
+			ok: false,
+			exitCode: 3,
+			logs: [],
+			payload: {error: 'Not logged in'},
+		};
+	}
+
+	if (!input.flags.config?.trim()) {
+		emit(
+			input.onProgress,
+			'`minenet diff` requires --config <configuration-id-or-directory>.',
+		);
+		return {
+			ok: false,
+			exitCode: 1,
+			logs: [],
+			payload: {error: 'Missing --config'},
+		};
+	}
+
+	const result = await requestWorkspaceDiff(input);
+	const fromRef = result.from ? `v${result.from.version_number}` : 'empty';
+	const toRef = `v${result.to.version_number}`;
+	const fromSuffix =
+		result.from && input.flags.debug ? ` [${result.from.id}]` : '';
+	const toSuffix = input.flags.debug ? ` [${result.to.id}]` : '';
+
+	emit(
+		input.onProgress,
+		`${result.configurationName} (${result.directoryName}) diff ${fromRef}${fromSuffix} -> ${toRef}${toSuffix}`,
+	);
+	emit(
+		input.onProgress,
+		`Stats: +${result.diff.stats.added} -${result.diff.stats.removed}${
+			result.diff.truncated ? ' (truncated)' : ''
+		}`,
+	);
+
+	if (!result.diff.unified.trim()) {
+		emit(input.onProgress, 'No changes.');
+	} else {
+		for (const line of result.diff.unified.split('\n')) {
+			emit(input.onProgress, line);
+		}
+	}
+
+	return {ok: true, exitCode: 0, logs: [], payload: result};
 }
 
 export async function executeCommand(
@@ -790,6 +1190,14 @@ export async function executeCommand(
 
 	if (cmd === 'status') {
 		return runStatus(input);
+	}
+
+	if (cmd === 'versions') {
+		return runVersions(input);
+	}
+
+	if (cmd === 'diff') {
+		return runDiff(input);
 	}
 
 	return {

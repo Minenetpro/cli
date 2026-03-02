@@ -1,5 +1,5 @@
-import test from "ava";
+import test from 'ava';
 
-test("test harness is configured", (t) => {
+test('test harness is configured', t => {
 	t.pass();
 });

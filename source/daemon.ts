@@ -367,16 +367,65 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
 	return waitForDaemon();
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null;
+}
+
+function pickFirstNonEmptyString(values: unknown[]): string | undefined {
+	for (const value of values) {
+		if (typeof value === 'string' && value.trim()) {
+			return value;
+		}
+	}
+
+	return undefined;
+}
+
+function extractDaemonErrorMessage(payload: unknown, status: number): string {
+	if (typeof payload === 'string' && payload.trim()) {
+		return payload;
+	}
+
+	if (!isRecord(payload)) {
+		return `Daemon request failed (${status})`;
+	}
+
+	const details = isRecord(payload['details']) ? payload['details'] : null;
+	const message = pickFirstNonEmptyString([
+		payload['error'],
+		payload['message'],
+		payload['error_description'],
+		payload['reason'],
+		details?.['error'],
+		details?.['message'],
+		details?.['error_description'],
+		details?.['reason'],
+	]);
+	if (message) {
+		return message;
+	}
+
+	if (typeof payload['code'] === 'string' && payload['code'].trim()) {
+		return `Daemon request failed (${status}) [${payload['code']}]`;
+	}
+
+	return `Daemon request failed (${status})`;
+}
+
 export async function daemonRequest<T>(input: {
 	path: string;
 	method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
 	body?: unknown;
+	apiBaseUrl?: string;
 }): Promise<T> {
 	const daemon = await ensureDaemon();
 	const method = input.method ?? 'GET';
 
 	const headers = new Headers();
 	headers.set('x-minenet-daemon-token', daemon.token);
+	if (typeof input.apiBaseUrl === 'string' && input.apiBaseUrl.trim()) {
+		headers.set('x-minenet-api-base-url', input.apiBaseUrl.trim());
+	}
 
 	let body: string | undefined;
 	if (input.body !== undefined) {
@@ -401,10 +450,7 @@ export async function daemonRequest<T>(input: {
 	}
 
 	if (!response.ok) {
-		const message =
-			typeof payload === 'object' && payload && 'error' in payload
-				? String((payload as Record<string, unknown>)['error'])
-				: `Daemon request failed (${response.status})`;
+		const message = extractDaemonErrorMessage(payload, response.status);
 		const error = new Error(message) as Error & {
 			status?: number;
 			payload?: unknown;
